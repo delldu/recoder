@@ -18,6 +18,12 @@ from recoder.losses import MSELoss, MultinomialNLLLoss
 
 from tqdm import tqdm
 
+try:
+  from apex import amp
+  apex_installed = True
+except ImportError:
+  apex_installed = False
+
 
 class Recoder(object):
   """
@@ -58,7 +64,7 @@ class Recoder(object):
                optimizer_type='sgd', loss='mse',
                loss_params=None, use_cuda=False,
                index_ids=True, user_based=True,
-               item_based=True):
+               item_based=True, fp16_training=False):
 
     self.model = model
     self.num_items = num_items
@@ -70,6 +76,7 @@ class Recoder(object):
     self.index_ids = index_ids
     self.user_based = user_based
     self.item_based = item_based
+    self.fp16_training = fp16_training
 
     if self.use_cuda:
       self.device = torch.device('cuda')
@@ -88,6 +95,13 @@ class Recoder(object):
     self.__sparse_optimizer_state_dict = None
 
     self.__inverse_item_id_map = None
+
+    self._amp_handle = None
+    if self.fp16_training and not apex_installed:
+      raise ImportError("""Please install apex from https://www.github.com/nvidia/apex
+                           in order to have FP16 training""")
+    elif self.fp16_training:
+      self._amp_handle = amp.init()
 
   def __init_model(self):
     if self.__model_initialized:
@@ -167,6 +181,15 @@ class Recoder(object):
       self.optimizer = optim.RMSprop(params, lr=lr, momentum=0.9)
     else:
       raise Exception('Unknown optimizer kind')
+
+    self._main_optimizer = self.optimizer
+    self._main_sparse_optimizer = self.sparse_optimizer
+
+    if self.optimizer is not None and self.fp16_training:
+      self.optimizer = self._amp_handle.wrap_optimizer(self.optimizer)
+
+    if self.sparse_optimizer is not None and self.fp16_training:
+      self.sparse_optimizer = self._amp_handle.wrap_optimizer(self.sparse_optimizer)
 
     if self.__optimizer_state_dict is not None:
       self.optimizer.load_state_dict(self.__optimizer_state_dict)
@@ -381,7 +404,7 @@ class Recoder(object):
 
     if lr_milestones is not None:
       _last_epoch = -1 if self.current_epoch == 1 else (self.current_epoch - 2)
-      lr_scheduler = MultiStepLR(self.optimizer, milestones=lr_milestones,
+      lr_scheduler = MultiStepLR(self._main_optimizer, milestones=lr_milestones,
                                  gamma=0.1, last_epoch=_last_epoch)
     else:
       lr_scheduler = None
@@ -411,7 +434,8 @@ class Recoder(object):
         lr_scheduler.step()
         lr = lr_scheduler.get_lr()[0]
       else:
-        lr = self.optimizer.defaults['lr']
+        lr = self._main_optimizer.defaults['lr']
+
       description = 'Epoch {}/{} (lr={})'.format(epoch, num_epochs, lr)
       progress_bar = tqdm(range(num_batches), desc=description)
       for batch_itr, (input, target) in enumerate(train_dataloader, 1):
@@ -428,7 +452,18 @@ class Recoder(object):
 
         loss = self.__compute_loss(input, target)
 
-        loss.backward()
+        if self.fp16_training:
+
+          if self.optimizer is not None:
+            with self.optimizer.scale_loss(loss) as scaled_loss:
+              scaled_loss.backward()
+          else:
+            with self.sparse_optimizer.scale_loss(loss) as scaled_loss:
+              scaled_loss.backward()
+
+        else:
+          loss.backward()
+
         if self.optimizer is not None:
           self.optimizer.step()
 
