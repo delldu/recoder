@@ -14,8 +14,8 @@ class UserInteractions:
 
   Args:
     user (str or int): user id
-    items (list): list of items the user interacted with
-    values (list): values of the interactions between the user and the items
+    items (np.array): list of items the user interacted with
+    values (np.array): values of the interactions between the user and the items
   """
   def __init__(self, user, items, values):
     self.user = user
@@ -33,8 +33,14 @@ def _dataframe_to_interactions(dataframe, user_col='user',
 
   for user in users:
     user_data = grouped_data_df.get_group(user)
-    interactions[user] = UserInteractions(user=user, items=user_data[item_col].tolist(),
-                                          values=user_data[inter_col].tolist())
+    # It's important to have items and values arrays as Numpy
+    # in order for them to be properly shared among multiple processes
+    # and not getting copied.
+    # Reference: https://github.com/pytorch/pytorch/issues/13246#issuecomment-445770039
+    items_np = np.array(user_data[item_col].values)
+    values_np = np.array(user_data[inter_col].values)
+    interactions[user] = UserInteractions(user=user, items=items_np,
+                                          values=values_np)
 
   return interactions
 
@@ -79,18 +85,22 @@ class RecommendationDataset(Dataset):
     if num_workers > 0:
       pool_exec = ProcessPoolExecutor(num_workers)
       futures = []
-      chunk_size = int(len(dataframe_users) / num_workers) + 1
-      users_chunks = [dataframe_users[offset:offset + chunk_size]
-                      for offset in range(0, len(dataframe_users), chunk_size)]
+      chunk_size = int(len(dataframe) / num_workers)
 
-      for users_chunk in users_chunks:
-        dataframe_chunk = dataframe[dataframe[user_col].isin(users_chunk)]
+      for offset in range(0, len(dataframe), chunk_size):
+        dataframe_chunk = dataframe[offset:offset+chunk_size]
         futures.append(pool_exec.submit(_dataframe_to_interactions, dataframe_chunk,
                                         user_col=user_col, item_col=item_col,
                                         inter_col=inter_col))
 
       for future in futures:
-        self.__interactions.update(future.result())
+        result = future.result()
+        for user in result:
+          if user in self.__interactions:
+            self.__interactions[user].items = np.append(self.__interactions[user].items, result[user].items)
+            self.__interactions[user].values = np.append(self.__interactions[user].values, result[user].values)
+          else:
+            self.__interactions[user] = result[user]
 
       pool_exec.shutdown()
     else:

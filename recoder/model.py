@@ -281,28 +281,28 @@ class Recoder(object):
       self.users = list(set(self.users + train_dataset.users))
 
     if self.index_ids:
-      if self.num_users is None:
+      if self.user_based and self.num_users is None:
         self.num_users = len(self.users)
       elif self.user_based:
         assert self.num_users >= len(self.users), \
           'Number of users in the model should be greater or equal than the number of users in the dataset.' \
           'If your model is independent of users, set user_dependent to False in Recoder constructor.'
 
-      if self.user_id_map is None:
+      if self.user_based and self.user_id_map is None:
         self.user_id_map = dict([(user_id, idx) for idx, user_id in enumerate(self.users)])
       elif self.user_based:
         assert len(np.setdiff1d(self.users, list(self.user_id_map.keys()))) == 0, \
           "There are users in the dataset that doesn't exist in the items index." \
           "If your model is not based on users, set user_based to False in Recoder constructor."
 
-      if self.num_items is None:
+      if self.item_based and self.num_items is None:
         self.num_items = len(self.items)
       elif self.item_based:
         assert self.num_items >= len(self.items), \
           'Number of items in the model should be greater or equal than the number of items in the dataset.' \
           'If your model is not based on items, set item_based to False in Recoder constructor.'
 
-      if self.item_id_map is None:
+      if self.item_based and self.item_id_map is None:
         self.item_id_map = dict([(item_id, idx) for idx, item_id in enumerate(self.items)])
       elif self.item_based:
         assert len(np.setdiff1d(self.items, list(self.item_id_map.keys()))) == 0, \
@@ -312,14 +312,14 @@ class Recoder(object):
       assert type(self.items[0]) is int, 'item ids should be integers, or set index_ids to True'
       assert type(self.users[0]) is int, 'user ids should be integers, or set index_ids to True'
 
-      if self.num_items is None:
+      if self.item_based and self.num_items is None:
         self.num_items = int(np.max(self.items)) + 1
       elif self.item_based:
         assert self.num_items >= int(np.max(self.items)) + 1,\
           'The largest item id should be smaller than number of items.' \
           'If your model is not based on items, set item_based to False in Recoder constructor.'
 
-      if self.num_users is None:
+      if self.user_based and self.num_users is None:
         self.num_users = int(np.max(self.users)) + 1
       elif self.user_based:
         assert self.num_users >= int(np.max(self.users)) + 1,\
@@ -332,10 +332,10 @@ class Recoder(object):
 
   def train(self, train_dataset, val_dataset=None,
             lr=0.001, weight_decay=0, num_epochs=1,
-            batch_size=64, lr_milestones=None,
+            iters_per_epoch=None, batch_size=64, lr_milestones=None,
             num_neg_samples=0, num_sampling_users=0, num_data_workers=0,
             model_checkpoint_prefix=None, checkpoint_freq=0,
-            eval_freq=0, eval_num_recommendations=None, metrics=None):
+            eval_freq=0, eval_num_recommendations=None, eval_num_users=None, metrics=None):
     """
     Trains the model
 
@@ -345,6 +345,8 @@ class Recoder(object):
       lr (float, optional): learning rate.
       weight_decay (float, optional): weight decay (L2 normalization).
       num_epochs (int, optional): number of epochs to train the model.
+      iters_per_epoch (int, optional): number of training iterations per training epoch. If None,
+        one epoch is full number of training samples in the dataset
       batch_size (int, optional): batch size
       lr_milestones (list, optional): optimizer learning rate epochs milestones (0.1 decay).
       num_neg_samples (int, optional): number of negative samples to generate for each user.
@@ -361,6 +363,8 @@ class Recoder(object):
       model_checkpoint_prefix (str, optional): model checkpoint save path prefix
       eval_freq (int, optional): epochs frequency of doing an evaluation
       eval_num_recommendations (int, optional): num of recommendations to generate on evaluation
+      eval_num_users (int, optional): number of users from the validation dataset to use for evaluation.
+        If None, all users in the validation dataset are used for evaluation.
       metrics (list[Metric], optional): list of ``Metric`` used to evaluate the model
     """
     log.info('{} Mode'.format('CPU' if self.device.type == 'cpu' else 'GPU'))
@@ -419,13 +423,21 @@ class Recoder(object):
                 checkpoint_freq=checkpoint_freq,
                 eval_freq=eval_freq,
                 metrics=metrics,
-                eval_num_recommendations=eval_num_recommendations)
+                eval_num_recommendations=eval_num_recommendations,
+                iters_per_epoch=iters_per_epoch,
+                eval_num_users=eval_num_users)
 
   def _train(self, train_dataloader, val_dataloader,
              num_epochs, current_epoch, lr_scheduler,
              batch_size, model_checkpoint_prefix, checkpoint_freq,
-             eval_freq, metrics, eval_num_recommendations):
+             eval_freq, metrics, eval_num_recommendations, iters_per_epoch,
+             eval_num_users):
     num_batches = len(train_dataloader)
+
+    iters_processed = 0
+    if iters_per_epoch is None:
+      iters_per_epoch = num_batches
+
     for epoch in range(current_epoch, num_epochs + 1):
       self.current_epoch = epoch
       self.model.train()
@@ -437,8 +449,20 @@ class Recoder(object):
         lr = self._main_optimizer.defaults['lr']
 
       description = 'Epoch {}/{} (lr={})'.format(epoch, num_epochs, lr)
-      progress_bar = tqdm(range(num_batches), desc=description)
-      for batch_itr, (input, target) in enumerate(train_dataloader, 1):
+
+      if iters_processed == 0 or iters_processed == num_batches:
+        # If we are starting from scratch,
+        # or we iterated through the whole dataloader,
+        # reset and reinitialize the iterator
+        iters_processed = 0
+        iterator = enumerate(train_dataloader, 1)
+
+      iters_to_process = min(iters_per_epoch, num_batches - iters_processed)
+      iters_processed += iters_to_process
+
+      progress_bar = tqdm(range(iters_to_process), desc=description)
+
+      for batch_itr, (input, target) in iterator:
         if self.optimizer is not None:
           self.optimizer.zero_grad()
 
@@ -483,6 +507,9 @@ class Recoder(object):
                                  refresh=False)
         progress_bar.update()
 
+        if batch_itr % iters_per_epoch == 0:
+          break
+
       postfix = {'loss': loss.item()}
       if eval_freq > 0 and epoch % eval_freq == 0 and val_dataloader is not None:
         val_loss = self._validate(val_dataloader)
@@ -490,7 +517,8 @@ class Recoder(object):
         if metrics is not None and eval_num_recommendations is not None:
           results = self._evaluate(val_dataloader.dataset,
                                    num_recommendations=eval_num_recommendations,
-                                   metrics=metrics, batch_size=batch_size)
+                                   metrics=metrics, batch_size=batch_size,
+                                   num_users=eval_num_users)
           for metric in results:
             postfix[str(metric)] = np.mean(results[metric])
 
@@ -577,7 +605,7 @@ class Recoder(object):
     output = self.model(input_dense, input_users=batch.users.to(device=self.device)).cpu()
     return output, input_dense.cpu() if return_input else output
 
-  def _evaluate(self, eval_dataset, num_recommendations, metrics, batch_size=1):
+  def _evaluate(self, eval_dataset, num_recommendations, metrics, batch_size=1, num_users=None):
     if self.model is None:
       raise Exception('Model not initialized')
 
@@ -586,7 +614,7 @@ class Recoder(object):
 
     evaluator = RecommenderEvaluator(recommender, metrics)
 
-    results = evaluator.evaluate(eval_dataset, batch_size=batch_size)
+    results = evaluator.evaluate(eval_dataset, batch_size=batch_size, num_users=num_users)
     return results
 
   def recommend(self, users_hist, num_recommendations):
@@ -624,7 +652,7 @@ class Recoder(object):
 
     return recommendations
 
-  def evaluate(self, eval_dataset, num_recommendations, metrics, batch_size=1):
+  def evaluate(self, eval_dataset, num_recommendations, metrics, batch_size=1, num_users=None):
     """
     Evaluates the current model given an evaluation dataset.
 
@@ -635,7 +663,7 @@ class Recoder(object):
       batch_size (int, optional): batch size of computations.
     """
     results = self._evaluate(eval_dataset, num_recommendations, metrics,
-                             batch_size=batch_size)
+                             batch_size=batch_size, num_users=num_users)
     for metric in results:
       log.info('{}: {}'.format(metric, np.mean(results[metric])))
 
