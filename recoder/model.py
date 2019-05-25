@@ -14,7 +14,7 @@ from recoder.data import RecommendationDataset, RecommendationDataLoader, BatchC
 from recoder.metrics import RecommenderEvaluator
 from recoder.nn import FactorizationModel
 from recoder.recommender import InferenceRecommender
-from recoder.losses import MSELoss, MultinomialNLLLoss
+from recoder.losses import MSELoss, MultinomialNLLLoss, _reduce
 
 from tqdm import tqdm
 
@@ -88,11 +88,11 @@ class Recoder(object):
     if issubclass(self.loss.__class__, torch.nn.Module):
       self.loss_module = self.loss
     elif self.loss == 'logistic':
-      self.loss_module = BCEWithLogitsLoss(reduction='sum', **self.loss_params)
+      self.loss_module = BCEWithLogitsLoss(reduction='none', **self.loss_params)
     elif self.loss == 'mse':
-      self.loss_module = MSELoss(reduction='sum', **self.loss_params)
+      self.loss_module = MSELoss(reduction='none', **self.loss_params)
     elif self.loss == 'logloss':
-      self.loss_module = MultinomialNLLLoss(reduction='sum')
+      self.loss_module = MultinomialNLLLoss(reduction='none', **self.loss_params)
     elif self.loss is None:
       raise ValueError('No loss function defined')
     else:
@@ -263,7 +263,8 @@ class Recoder(object):
   def train(self, train_dataset, val_dataset=None,
             lr=0.001, weight_decay=0, num_epochs=1,
             iters_per_epoch=None, batch_size=64, lr_milestones=None,
-            negative_sampling=False, num_sampling_users=0, num_data_workers=0,
+            negative_sampling=False, num_sampling_users=0,
+            downsampling_threshold=None, num_data_workers=0,
             model_checkpoint_prefix=None, checkpoint_freq=0,
             eval_freq=0, eval_num_recommendations=None,
             eval_num_users=None, metrics=None, eval_batch_size=None):
@@ -285,6 +286,7 @@ class Recoder(object):
         This is useful for increasing the number of negative samples in mini-batch based negative
         sampling while keeping the batch-size small. If 0, then num_sampling_users will
         be equal to batch_size.
+      downsampling_threshold (float, optional): downsampling threshold (same downsampling method used in word2vec).
       num_data_workers (int, optional): number of data workers to use for building the mini-batches.
       checkpoint_freq (int, optional): epochs frequency of saving a checkpoint of the model
       model_checkpoint_prefix (str, optional): model checkpoint save path prefix
@@ -322,6 +324,7 @@ class Recoder(object):
     train_dataloader = RecommendationDataLoader(train_dataset, batch_size=batch_size,
                                                 negative_sampling=negative_sampling,
                                                 num_sampling_users=num_sampling_users,
+                                                downsampling_threshold=downsampling_threshold,
                                                 num_workers=num_data_workers)
     if val_dataset is not None:
       val_dataloader = RecommendationDataLoader(val_dataset, batch_size=batch_size,
@@ -467,6 +470,10 @@ class Recoder(object):
     input_users = input.users
     input_dense = torch.sparse.FloatTensor(input.indices, input.values, input.size) \
       .to(device=self.device).to_dense()
+    input_sample_mask_dense = None
+    if input.sample_mask is not None:
+      input_sample_mask_dense = torch.sparse.FloatTensor(input.indices, input.sample_mask, input.size) \
+        .to(device=self.device).to_dense()
     if input_items is not None:
       input_items = input_items.to(device=self.device)
     if input_users is not None:
@@ -477,6 +484,10 @@ class Recoder(object):
       target_users = target.users
       target_dense = torch.sparse.FloatTensor(target.indices, target.values, target.size) \
         .to(device=self.device).to_dense()
+      target_sample_mask_dense = None
+      if target.sample_mask is not None:
+        target_sample_mask_dense = torch.sparse.FloatTensor(target.indices, target.sample_mask, target.size) \
+          .to(device=self.device).to_dense()
       if target_items is not None:
         target_items = target_items.to(device=self.device)
       if target_users is not None:
@@ -485,14 +496,21 @@ class Recoder(object):
       target_dense = input_dense
       target_items = input_items
       target_users = input_users
+      target_sample_mask_dense = input_sample_mask_dense
 
     output = self.model(input_dense, input_items=input_items,
                         input_users=input_users, target_items=target_items,
                         target_users=target_users)
 
-    # Average loss over samples in a batch
     normalization = torch.FloatTensor([target_dense.size(0)]).to(device=self.device)
-    loss = self.loss_module(output, target_dense) / normalization
+
+    if target_sample_mask_dense is not None:
+      # Average loss over samples in a batch
+      loss = _reduce(self.loss_module(output, target_dense) * target_sample_mask_dense, 'sum') / normalization
+    else:
+      # Average loss over samples in a batch
+      loss = _reduce(self.loss_module(output, target_dense), 'sum') / normalization
+
     return loss
 
   def predict(self, users_interactions, return_input=False):
