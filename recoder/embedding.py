@@ -154,9 +154,8 @@ class AnnoyEmbeddingsIndex(EmbeddingsIndex):
 
   def get_similarity(self, id1, id2):
     distance = self.index.get_distance(self.id_map[id1], self.id_map[id2])
-    cosine_similarity = 1 - (distance**2) / 2 # range from -1 to 1
-    similarity = (cosine_similarity + 1) / 2 # range from 0 to 1
-    return similarity
+    cosine_similarity = 1 - (distance**2) / 2  # range from -1 to 1
+    return cosine_similarity
 
 
 class MemCacheEmbeddingsIndex(EmbeddingsIndex):
