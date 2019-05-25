@@ -428,7 +428,7 @@ class Recoder(object):
         if batch_itr % iters_per_epoch == 0:
           break
 
-      postfix = {'loss': loss.item()}
+      postfix = {'loss': np.mean(aggregated_losses)}
       if eval_freq > 0 and epoch % eval_freq == 0 and val_dataloader is not None:
         val_loss = self._validate(val_dataloader)
         postfix['val_loss'] = val_loss
