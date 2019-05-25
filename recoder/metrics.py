@@ -1,6 +1,5 @@
 import numpy as np
 
-import recoder.utils as utils
 from recoder.data import RecommendationDataLoader
 
 from multiprocessing import Process, Queue
@@ -61,6 +60,9 @@ class Metric(object):
 
   def __hash__(self):
     return self.metric_name.__hash__()
+
+  def __eq__(self, other):
+    return isinstance(other, Metric) and self.metric_name.__eq__(other.metric_name)
 
   def evaluate(self, x, y):
     """
