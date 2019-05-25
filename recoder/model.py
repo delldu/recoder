@@ -163,6 +163,8 @@ class Recoder(object):
       self.sparse_optimizer.load_state_dict(self.__sparse_optimizer_state_dict)
       self.__sparse_optimizer_state_dict = None
 
+    assert self.optimizer is not None or self.sparse_optimizer is not None, "No optimizer was initialized"
+
   def init_from_model_file(self, model_file):
     """
     Initializes the model from a pre-trained model
@@ -183,7 +185,7 @@ class Recoder(object):
     self.users = model_saved_state.get('users', None)
     self.num_items = model_saved_state.get('num_items', None)
     self.num_users = model_saved_state.get('num_users', None)
-    self.__optimizer_state_dict = model_saved_state['optimizer']
+    self.__optimizer_state_dict = model_saved_state.get('optimizer', None)
     self.__sparse_optimizer_state_dict = model_saved_state.get('sparse_optimizer', None)
 
     self.model.load_model_params(model_params)
@@ -209,12 +211,17 @@ class Recoder(object):
       'last_epoch': self.current_epoch,
       'model': self.model.state_dict(),
       'optimizer_type': self.optimizer_type,
-      'optimizer': self.optimizer.state_dict(),
       'items': self.items,
       'users': self.users,
       'num_items': self.num_items,
       'num_users': self.num_users
     }
+
+    if self.optimizer is not None:
+      current_state['optimizer'] = self.optimizer.state_dict()
+
+    if self.sparse_optimizer is not None:
+      current_state['sparse_optimizer'] = self.sparse_optimizer.state_dict()
 
     if type(self.loss) is str:
       current_state['loss'] = self.loss
@@ -365,7 +372,11 @@ class Recoder(object):
         lr_scheduler.step()
         lr = lr_scheduler.get_lr()[0]
       else:
-        lr = self.optimizer.defaults['lr']
+        if self.optimizer is not None:
+          lr = self.optimizer.defaults['lr']
+        else:
+          lr = self.sparse_optimizer.defaults['lr']
+
       description = 'Epoch {}/{} (lr={})'.format(epoch, num_epochs, lr)
 
       if iters_processed == 0 or iters_processed == num_batches:
