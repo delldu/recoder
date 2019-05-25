@@ -24,7 +24,7 @@ def normalize(x, axis=None):
 
 
 def dataframe_to_csr_matrix(dataframe, user_col, item_col,
-                            inter_col, item_id_map=None,
+                            inter_col=None, item_id_map=None,
                             user_id_map=None):
   """
   Converts a :class:`pandas.DataFrame` of users and items interactions into a :class:`scipy.sparse.csr_matrix`.
@@ -59,7 +59,10 @@ def dataframe_to_csr_matrix(dataframe, user_col, item_col,
 
   matrix_users = dataframe[user_col].map(user_id_map)
   matrix_items = dataframe[item_col].map(item_id_map)
-  matrix_inters = dataframe[inter_col]
+  if inter_col is not None:
+    matrix_inters = dataframe[inter_col]
+  else:
+    matrix_inters = np.ones(len(matrix_users))
 
   csr_matrix = coo_matrix((matrix_inters, (matrix_users, matrix_items)), shape=matrix_size).tocsr()
 
