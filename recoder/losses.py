@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 import torch.nn.functional as F
 
@@ -52,20 +53,31 @@ class MultinomialNLLLoss(nn.Module):
   Computes the negative log-likelihood of the multinomial distribution.
 
   .. math::
-    \ell(x, y) = L = - y \cdot \log(softmax(x))
+    \ell(x, y) = \begin{cases}
+      - y \cdot \log(softmax(x)), & \text{if apply\_softmax} = \text{True},\\
+      - y \cdot \log(x),  & \text{if apply\_softmax} = \text{False}.
+    \end{cases}
 
   Args:
     reduction (string, optional): Specifies the reduction to apply to the output:
         'none' | 'elementwise_mean' | 'sum'. 'none': no reduction will be applied,
         'elementwise_mean': the sum of the output will be divided by the number of
         elements in the output, 'sum': the output will be summed. Default: 'elementwise_mean'
+    apply_softmax (bool, optional): Whether to apply softmax on the input or not. If False,
+      the input should be the output of a softmax
   """
 
-  def __init__(self, reduction='elementwise_mean'):
+  def __init__(self, reduction='elementwise_mean',
+               apply_softmax=True):
     super(MultinomialNLLLoss, self).__init__()
     self.reduction = reduction
+    self.apply_softmax = apply_softmax
 
   def forward(self, input, target):
-    loss = - target * F.log_softmax(input, dim=1)
+
+    if self.apply_softmax:
+      loss = - target * F.log_softmax(input, dim=1)
+    else:
+      loss = - target * torch.log(input)
 
     return _reduce(loss, reduction=self.reduction)
