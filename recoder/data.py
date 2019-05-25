@@ -100,23 +100,30 @@ class RecommendationDataLoader:
       sampling. This is useful for increasing the number of negative samples while keeping the
       batch-size small. If 0, then num_sampling_users will be equal to batch_size.
     num_workers (int, optional): how many subprocesses to use for data loading.
+    downsampling_threshold (float, optional): downsampling threshold (same downsampling method used in word2vec).
     collate_fn (callable, optional): A function that transforms a :class:`UsersInteractions` into
       a mini-batch.
   """
   def __init__(self, dataset, batch_size, negative_sampling=False,
-               num_sampling_users=0, num_workers=0, collate_fn=None):
+               num_sampling_users=0, num_workers=0, downsampling_threshold=None,
+               collate_fn=None):
     self.dataset = dataset # type: RecommendationDataset
     self.num_sampling_users = num_sampling_users
     self.num_workers = num_workers
     self.batch_size = batch_size
     self.negative_sampling = negative_sampling
+    self.downsampling_threshold = downsampling_threshold
 
     if self.num_sampling_users == 0:
       self.num_sampling_users = batch_size
 
     assert self.num_sampling_users >= batch_size, 'num_sampling_users should be at least equal to the batch_size'
 
-    self.batch_collator = BatchCollator(batch_size=self.batch_size, negative_sampling=self.negative_sampling)
+    items_count = np.asarray((self.dataset.interactions_matrix > 0).astype(np.int).sum(axis=0)).reshape(-1,)
+
+    self.batch_collator = BatchCollator(batch_size=self.batch_size, negative_sampling=self.negative_sampling,
+                                        downsampling_threshold=downsampling_threshold,
+                                        items_count=items_count)
 
     # Wrapping a BatchSampler within a BatchSampler
     # in order to fetch the whole mini-batch at once
@@ -179,12 +186,14 @@ class Batch:
     size (torch.Size): the size of the sparse interactions matrix
   """
   def __init__(self, users, items,
-               indices, values, size):
+               indices, values, size,
+               sample_mask):
     self.users = users
     self.items = items
     self.indices = indices
     self.values = values
     self.size = size
+    self.sample_mask = sample_mask
 
 
 class BatchCollator:
@@ -195,10 +204,22 @@ class BatchCollator:
   Args:
     batch_size (int): number of samples per batch
     negative_sampling (bool, optional): whether to apply mini-batch based negative sampling or not.
+    downsampling_threshold (float, optional): downsampling threshold (same downsampling method used in word2vec).
   """
-  def __init__(self, batch_size, negative_sampling=False):
+  def __init__(self, batch_size, negative_sampling=False,
+               downsampling_threshold=None, items_count=None):
+
     self.batch_size = batch_size
     self.negative_sampling = negative_sampling
+    self.downsampling_threshold = downsampling_threshold
+    self.items_count = items_count
+
+    self._items_sampling_prob = None
+    if downsampling_threshold is not None and items_count is not None:
+      # based on word2vec downsampling method
+      count_threshold = downsampling_threshold * np.sum(items_count)
+      self._items_sampling_prob = (np.sqrt(items_count / count_threshold) + 1) * (count_threshold / items_count)
+      self._items_sampling_prob = np.clip(self._items_sampling_prob, 0, 1)
 
   def collate(self, users_interactions):
     """
@@ -212,7 +233,17 @@ class BatchCollator:
     """
     batch_users = users_interactions.users
 
-    users_inds, items_inds = users_interactions.interactions_matrix.nonzero()
+    intr_matrix_indptr = users_interactions.interactions_matrix.indptr
+
+    items_inds = users_interactions.interactions_matrix.indices
+    interactions = users_interactions.interactions_matrix.data
+
+    sample_mask = None
+    if self._items_sampling_prob is not None:
+      # downsample by setting the downsampled interactions to 0
+      sample_mask = np.random.binomial(1, p=self._items_sampling_prob[items_inds])
+      interactions = interactions * sample_mask
+
     if self.negative_sampling:
       # The positive item ids in the batch
       # This is simply equivalent to only selecting the non-zero columns
@@ -227,25 +258,28 @@ class BatchCollator:
 
     batch_users = torch.LongTensor(batch_users)
     slices = []
-    current_ind = 0
     for offset in range(0, users_interactions.interactions_matrix.shape[0], self.batch_size):
-      slice_sparse_matrix = users_interactions.interactions_matrix[offset: offset + self.batch_size]
+      slice_indptr = intr_matrix_indptr[offset: offset + self.batch_size + 1]
 
       slice_batch_users = batch_users[offset: offset + self.batch_size]
 
-      slice_users_inds = slice_sparse_matrix.nonzero()[0]
+      num_inters_per_user = slice_indptr[1:] - slice_indptr[:-1]
+      slice_users_inds = np.repeat(np.arange(len(slice_batch_users)), num_inters_per_user)
 
-      num_nnz = slice_sparse_matrix.getnnz()
-      slice_items_inds = items_inds[current_ind:current_ind+num_nnz]
-      current_ind += num_nnz
+      slice_items_inds = items_inds[slice_indptr[0]:slice_indptr[-1]]
+      slice_inter_vals = interactions[slice_indptr[0]:slice_indptr[-1]]
 
-      slice_inter_vals = slice_sparse_matrix.data
+      if sample_mask is not None:
+        slice_sample_mask = torch.FloatTensor(sample_mask[slice_indptr[0]:slice_indptr[-1]])
+      else:
+        slice_sample_mask = None
 
       indices = torch.LongTensor([slice_users_inds, slice_items_inds])
       values = torch.FloatTensor(slice_inter_vals)
 
       slices.append(Batch(items=batch_items, users=slice_batch_users,
                           indices=indices, values=values,
-                          size=torch.Size([slice_sparse_matrix.shape[0], vector_dim])))
+                          size=torch.Size([len(slice_batch_users), vector_dim]),
+                          sample_mask=slice_sample_mask))
 
     return slices
