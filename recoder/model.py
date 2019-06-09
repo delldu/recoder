@@ -470,10 +470,6 @@ class Recoder(object):
     input_users = input.users
     input_dense = torch.sparse.FloatTensor(input.indices, input.values, input.size) \
       .to(device=self.device).to_dense()
-    input_sample_mask_dense = None
-    if input.sample_mask is not None:
-      input_sample_mask_dense = torch.sparse.FloatTensor(input.indices, input.sample_mask, input.size) \
-        .to(device=self.device).to_dense()
     if input_items is not None:
       input_items = input_items.to(device=self.device)
     if input_users is not None:
@@ -484,10 +480,6 @@ class Recoder(object):
       target_users = target.users
       target_dense = torch.sparse.FloatTensor(target.indices, target.values, target.size) \
         .to(device=self.device).to_dense()
-      target_sample_mask_dense = None
-      if target.sample_mask is not None:
-        target_sample_mask_dense = torch.sparse.FloatTensor(target.indices, target.sample_mask, target.size) \
-          .to(device=self.device).to_dense()
       if target_items is not None:
         target_items = target_items.to(device=self.device)
       if target_users is not None:
@@ -496,7 +488,6 @@ class Recoder(object):
       target_dense = input_dense
       target_items = input_items
       target_users = input_users
-      target_sample_mask_dense = input_sample_mask_dense
 
     output = self.model(input_dense, input_items=input_items,
                         input_users=input_users, target_items=target_items,
@@ -504,12 +495,7 @@ class Recoder(object):
 
     normalization = torch.FloatTensor([target_dense.size(0)]).to(device=self.device)
 
-    if target_sample_mask_dense is not None:
-      # Average loss over samples in a batch
-      loss = _reduce(self.loss_module(output, target_dense) * target_sample_mask_dense, 'sum') / normalization
-    else:
-      # Average loss over samples in a batch
-      loss = _reduce(self.loss_module(output, target_dense), 'sum') / normalization
+    loss = _reduce(self.loss_module(output, target_dense), 'sum') / normalization
 
     return loss
 

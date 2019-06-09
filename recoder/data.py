@@ -186,14 +186,12 @@ class Batch:
     size (torch.Size): the size of the sparse interactions matrix
   """
   def __init__(self, users, items,
-               indices, values, size,
-               sample_mask):
+               indices, values, size):
     self.users = users
     self.items = items
     self.indices = indices
     self.values = values
     self.size = size
-    self.sample_mask = sample_mask
 
 
 class BatchCollator:
@@ -238,7 +236,6 @@ class BatchCollator:
     items_inds = users_interactions.interactions_matrix.indices
     interactions = users_interactions.interactions_matrix.data
 
-    sample_mask = None
     if self._items_sampling_prob is not None:
       # downsample by setting the downsampled interactions to 0
       sample_mask = np.random.binomial(1, p=self._items_sampling_prob[items_inds])
@@ -269,17 +266,11 @@ class BatchCollator:
       slice_items_inds = items_inds[slice_indptr[0]:slice_indptr[-1]]
       slice_inter_vals = interactions[slice_indptr[0]:slice_indptr[-1]]
 
-      if sample_mask is not None:
-        slice_sample_mask = torch.FloatTensor(sample_mask[slice_indptr[0]:slice_indptr[-1]])
-      else:
-        slice_sample_mask = None
-
       indices = torch.LongTensor([slice_users_inds, slice_items_inds])
       values = torch.FloatTensor(slice_inter_vals)
 
       slices.append(Batch(items=batch_items, users=slice_batch_users,
                           indices=indices, values=values,
-                          size=torch.Size([len(slice_batch_users), vector_dim]),
-                          sample_mask=slice_sample_mask))
+                          size=torch.Size([len(slice_batch_users), vector_dim])))
 
     return slices
