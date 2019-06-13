@@ -2,11 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from recoder.data import RecommendationDataset
+from recoder.data.factorization import RecommendationDataset
 from recoder.metrics import Recall, NDCG
 from recoder.model import Recoder
 from recoder.nn import DynamicAutoencoder, MatrixFactorization
-from recoder.utils import dataframe_to_csr_matrix
+from recoder.data.utils import dataframe_to_csr_matrix
 
 import os
 

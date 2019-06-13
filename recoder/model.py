@@ -10,7 +10,7 @@ from torch.nn import BCEWithLogitsLoss
 import numpy as np
 
 from recoder import __version__
-from recoder.data import RecommendationDataset, RecommendationDataLoader, BatchCollator
+from recoder.data.factorization import RecommendationDataset, RecommendationDataLoader, BatchCollator
 from recoder.metrics import RecommenderEvaluator
 from recoder.nn import FactorizationModel
 from recoder.recommender import InferenceRecommender

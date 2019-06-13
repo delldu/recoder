@@ -1,5 +1,5 @@
-from recoder.data import RecommendationDataset, RecommendationDataLoader, BatchCollator
-from recoder.utils import dataframe_to_csr_matrix
+from recoder.data.factorization import RecommendationDataset, RecommendationDataLoader, BatchCollator
+from recoder.data.utils import dataframe_to_csr_matrix
 
 import pandas as pd
 import numpy as np

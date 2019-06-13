@@ -6,6 +6,7 @@ import scipy.sparse as sparse
 import scipy.sparse.sputils as sputils
 
 import recoder.utils as utils
+import recoder.data.utils as data_utils
 
 
 CSR_MATRIX_INDEX_SIZE_LIMIT = 2000
@@ -52,35 +53,14 @@ class RecommendationDataset(Dataset):
 
     users = np.array(index).reshape(-1,)
 
-    extracted_sparse_matrix = self._extract(self.interactions_matrix, index)
+    extracted_sparse_matrix = data_utils.index_sparse_matrix(self.interactions_matrix, index)
 
     if self.target_interactions_matrix is None:
       return UsersInteractions(users=users, interactions_matrix=extracted_sparse_matrix), None
     else:
-      extracted_target_sparse_matrix = self._extract(self.target_interactions_matrix, index)
+      extracted_target_sparse_matrix = data_utils.index_sparse_matrix(self.target_interactions_matrix, index)
       return UsersInteractions(users=users, interactions_matrix=extracted_sparse_matrix), \
              UsersInteractions(users=users, interactions_matrix=extracted_target_sparse_matrix)
-
-  def _extract(self, sparse_matrix, index):
-
-    if sputils.issequence(index) and len(index) > CSR_MATRIX_INDEX_SIZE_LIMIT:
-      # It happens that scipy implements the indexing of a csr_matrix with a list using
-      # matrix multiplication, which gets to be an issue if the size of the index list is
-      # large and lead to memory issues
-      # Reference: https://stackoverflow.com/questions/46034212/sparse-matrix-slicing-memory-error/46040827#46040827
-
-      # In order to solve this issue, simply chunk the index into smaller indices of
-      # size CSR_MATRIX_INDEX_SIZE_LIMIT and then stack the extracted chunks
-
-      sparse_matrix_slices = []
-      for offset in range(0, len(index), CSR_MATRIX_INDEX_SIZE_LIMIT):
-        sparse_matrix_slices.append(sparse_matrix[index[offset: offset + CSR_MATRIX_INDEX_SIZE_LIMIT]])
-
-      extracted_sparse_matrix = sparse.vstack(sparse_matrix_slices)
-    else:
-      extracted_sparse_matrix = sparse_matrix[index]
-
-    return extracted_sparse_matrix
 
 
 class RecommendationDataLoader:
@@ -214,10 +194,7 @@ class BatchCollator:
 
     self._items_sampling_prob = None
     if downsampling_threshold is not None and items_count is not None:
-      # based on word2vec downsampling method
-      count_threshold = downsampling_threshold * np.sum(items_count)
-      self._items_sampling_prob = (np.sqrt(items_count / count_threshold) + 1) * (count_threshold / items_count)
-      self._items_sampling_prob = np.clip(self._items_sampling_prob, 0, 1)
+      self._items_sampling_prob = data_utils.compute_sampling_probabilities(items_count, downsampling_threshold)
 
   def collate(self, users_interactions):
     """

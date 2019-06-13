@@ -1,6 +1,6 @@
 import numpy as np
 
-from recoder.data import RecommendationDataLoader
+from recoder.data.factorization import RecommendationDataLoader
 
 from multiprocessing import Process, Queue
 
