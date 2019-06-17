@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.sparse as sparse
 
 from recoder.data.factorization import RecommendationDataLoader
 
@@ -148,7 +149,8 @@ class RecommenderEvaluator(object):
     self.metrics = metrics
 
   def evaluate(self, eval_dataset, batch_size=1,
-               num_users=None, num_workers=0):
+               num_users=None, num_workers=0,
+               input_split=0.5):
     """
     Evaluates the recommender with an evaluation dataset.
 
@@ -161,7 +163,8 @@ class RecommenderEvaluator(object):
       num_workers (int, optional): the number of workers to use on evaluating
         the recommended items. This is useful if the recommender runs on GPU, so the
         evaluation can run in parallel.
-
+      input_split (float, optional): the split percentage of the input to use as user history,
+        and the remaining split as the user future interactions.
     Returns:
       dict: A dict mapping each metric to the list of the metric values on each
       user in the dataset.
@@ -200,21 +203,31 @@ class RecommenderEvaluator(object):
         worker.start()
 
     processed_num_users = 0
-    for batch in dataloader:
-      input, target = batch
+    for input in dataloader:
+      target_mask = np.random.binomial(1, p=(1 - input_split), size=input.interactions_matrix.data.shape)
+
+      target_interactions_matrix = sparse.csr_matrix((input.interactions_matrix.data * target_mask,
+                                                      input.interactions_matrix.indices,
+                                                      input.interactions_matrix.indptr))
+
+      input.interactions_matrix.data = input.interactions_matrix.data * (1 - target_mask)
 
       recommendations = self.recommender.recommend(input)
 
-      relevant_items = [target.interactions_matrix[i].nonzero()[1] for i in range(len(target.users))]
+      relevant_items = [target_interactions_matrix[i].nonzero()[1] for i in range(len(input.users))]
 
       for x, y in zip(recommendations, relevant_items):
+
+        if len(x) == 0 or len(y) == 0:
+          continue
+
         if num_workers > 0:
           input_queue.put((x, y))
         else:
           for metric in self.metrics:
             results[metric].append(metric.evaluate(x, y))
 
-      processed_num_users += len(target.users)
+      processed_num_users += len(input.users)
       if num_users is not None and processed_num_users >= num_users:
         break
 
