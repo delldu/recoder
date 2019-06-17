@@ -35,13 +35,10 @@ class RecommendationDataset(Dataset):
 
   Args:
     interactions_matrix (scipy.sparse.csr_matrix): the user-item interactions matrix.
-    target_interactions_matrix (scipy.sparse.csr_matrix, optional): the target user-item interactions
-      matrix. Mainly used for evaluation, representing the items to recommend.
   """
 
-  def __init__(self, interactions_matrix, target_interactions_matrix=None):
+  def __init__(self, interactions_matrix):
     self.interactions_matrix = interactions_matrix  # type: sparse.csr_matrix
-    self.target_interactions_matrix = target_interactions_matrix  # type: sparse.csr_matrix
     self.users = np.arange(self.interactions_matrix.shape[0])
     self.items = np.arange(self.interactions_matrix.shape[1])
 
@@ -55,12 +52,7 @@ class RecommendationDataset(Dataset):
 
     extracted_sparse_matrix = data_utils.index_sparse_matrix(self.interactions_matrix, index)
 
-    if self.target_interactions_matrix is None:
-      return UsersInteractions(users=users, interactions_matrix=extracted_sparse_matrix), None
-    else:
-      extracted_target_sparse_matrix = data_utils.index_sparse_matrix(self.target_interactions_matrix, index)
-      return UsersInteractions(users=users, interactions_matrix=extracted_sparse_matrix), \
-             UsersInteractions(users=users, interactions_matrix=extracted_target_sparse_matrix)
+    return UsersInteractions(users=users, interactions_matrix=extracted_sparse_matrix)
 
 
 class RecommendationDataLoader:
@@ -123,26 +115,12 @@ class RecommendationDataLoader:
                                   num_workers=num_workers, collate_fn=self._collate)
 
   def _default_data_generator(self):
-    for input, target in self._dataloader:
+    for input in self._dataloader:
       for batch_ind in range(len(input)):
-        if target is None:
-          yield input[batch_ind], None
-        else:
-          yield input[batch_ind], target[batch_ind]
+        yield input[batch_ind]
 
   def _collate(self, batch):
-    _input_batch, _target_batch = utils.unzip(batch)
-
-    # _input_batch is a list of size 1, where the only
-    # element is the UsersInteractions batch
-    input = self._collate_fn(_input_batch[0])
-
-    if _target_batch[0] is None:
-      target = None
-    else:
-      target = self._collate_fn(_target_batch[0])
-
-    return input, target
+    return self._collate_fn(batch[0])
 
   def __iter__(self):
     if self._use_default_data_generator:
@@ -172,6 +150,19 @@ class Batch:
     self.indices = indices
     self.values = values
     self.size = size
+
+    self.sparse_tensor = None
+
+  def to(self, device):
+    if self.users is not None:
+      self.users = self.users.to(device)
+
+    if self.items is not None:
+      self.items = self.items.to(device)
+
+    self.sparse_tensor = torch.sparse.FloatTensor(self.indices,
+                                                  self.values,
+                                                  self.size).to(device=device)
 
 
 class BatchCollator:
