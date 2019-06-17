@@ -203,8 +203,11 @@ class SequenceSparseBatch:
     self.sparse_tensor = None
 
   def to(self, device):
-    self.items = self.items.to(device)
-    self.sequence_ids = self.sequence_ids.to(device)
+    if self.items is not None:
+      self.items = self.items.to(device)
+
+    if self.sequence_ids is not None:
+      self.sequence_ids = self.sequence_ids.to(device)
 
     self.sparse_tensor = torch.sparse.FloatTensor(self.indices,
                                                   self.values,
