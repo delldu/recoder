@@ -10,6 +10,8 @@ def _reduce(x, reduction='elementwise_mean'):
     return x.mean()
   elif reduction is 'sum':
     return x.sum()
+  elif reduction is 'batchsize_mean':
+    return x.sum() / x.shape[0]
   else:
     raise ValueError('No such reduction {} defined'.format(reduction))
 
