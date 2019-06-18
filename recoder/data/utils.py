@@ -86,14 +86,14 @@ def dataframe_to_csr_matrix(dataframe, user_col, item_col,
   return csr_matrix, item_id_map, user_id_map
 
 
-def dataframe_to_seq_csr_matrix(dataframe, sequence_id_col, sequence_col,
-                                item_id_map=None, sequence_id_map=None):
+def dataframe_to_seq_array(dataframe, sequence_id_col, sequence_col,
+                           item_id_map=None, sequence_id_map=None):
   """
-  Converts a :class:`pandas.DataFrame` of users and items interactions into a :class:`scipy.sparse.csr_matrix`.
+  Converts a :class:`pandas.DataFrame` of sequences into an :class:`np.array`.
 
-  This function returns a tuple of the interactions sparse matrix, a `dict` that maps
+  This function returns a tuple of the sequences, sequences lengths, a `dict` that maps
   from original item ids in the dataframe to the 0-based item ids, and similarly a `dict` that maps
-  from original user ids in the dataframe to the 0-based user ids.
+  from original sequence ids in the dataframe to the 0-based sequence ids.
 
   Args:
     dataframe (pandas.DataFrame): A dataframe containing users and items interactions
@@ -105,7 +105,8 @@ def dataframe_to_seq_csr_matrix(dataframe, sequence_id_col, sequence_col,
       If not given, the map will be generated using the sequence_id column in the dataframe
 
   Returns:
-    tuple: A tuple of the `csr_matrix`, a :class:`dict` `item_id_map`, and a :class:`dict` `user_id_map`
+    tuple: A tuple of the :class:`np.array` `sequences`, a `np.array` sequences lengths,
+      a :class:`dict` `item_id_map`, and a :class:`dict` `sequence_id_map`
   """
 
   if sequence_id_map is None:
@@ -119,14 +120,7 @@ def dataframe_to_seq_csr_matrix(dataframe, sequence_id_col, sequence_col,
   dataframe[sequence_id_col + '_matrix'] = dataframe[sequence_id_col].map(sequence_id_map)
   dataframe.sort_values(inplace=True, by=sequence_id_col + '_matrix')
 
+  sequences = np.hstack(dataframe[sequence_col].map(lambda seq: list(map(lambda itemid: item_id_map[itemid], seq))))
   sequences_lens = dataframe[sequence_col].map(len).values
 
-  matrix_rows = np.arange(0, np.sum(sequences_lens))
-  matrix_items = np.hstack(dataframe[sequence_col].map(lambda seq: list(map(lambda itemid: item_id_map[itemid], seq))))
-  matrix_values = np.ones(len(matrix_rows))
-
-  matrix_size = (len(matrix_rows), len(item_id_map.keys()))
-
-  csr_matrix = coo_matrix((matrix_values, (matrix_rows, matrix_items)), shape=matrix_size).tocsr()
-
-  return csr_matrix, sequences_lens, item_id_map, sequence_id_map
+  return sequences, sequences_lens, item_id_map, sequence_id_map

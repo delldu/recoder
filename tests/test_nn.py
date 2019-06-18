@@ -1,4 +1,4 @@
-from recoder.nn import DynamicAutoencoder
+from recoder.nn.factorization import DynamicAutoencoder
 
 import torch
 

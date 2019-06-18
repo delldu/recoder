@@ -2,14 +2,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-
-def activation(x, act):
-  if act == 'none': return x
-  func = getattr(torch, act)
-  return func(x)
+from recoder.nn.base import BaseModel, ModelOutput
+from recoder.nn.utils import activation
 
 
-class FactorizationModel(nn.Module):
+class FactorizationModel(BaseModel):
   """
   Base class for factorization models. All subclasses should implement
   the following methods.
@@ -46,21 +43,12 @@ class FactorizationModel(nn.Module):
     """
     raise NotImplementedError
 
-  def forward(self, input, input_users=None,
-              input_items=None, target_users=None,
-              target_items=None):
+  def forward(self, input):
     """
     Applies a forward pass of the input on the latent factor model.
 
     Args:
-      input (torch.FloatTensor): the input dense matrix of user item interactions.
-      input_users (torch.LongTensor): the users represented in the input batch, where
-        each user corresponds to a row in ``input`` based on their index.
-      input_items (torch.LongTensor): the items represented in the input batch, where
-        each items corresponds to a column in ``input`` based on their index.
-      target_users (torch.LongTensor): the target users to predict. Typically, this is not used,
-        but kept for consistency.
-      target_items (torch.LongTensor): the target items to predict.
+      input (Batch): the input dense matrix of user item interactions.
     """
     raise NotImplementedError
 
@@ -225,18 +213,18 @@ class DynamicAutoencoder(FactorizationModel):
     for el, dl in zip(self.encoding_layers, reversed(self.decoding_layers)):
       dl.weight = el.weight.t()
 
-  def forward(self, input, input_users=None,
-              input_items=None, target_users=None,
-              target_items=None):
+  def forward(self, input):
+    input_sparse_tensor = input.sparse_tensor
+    input_tensor = input_sparse_tensor.to_dense()
     if self.is_constrained:
       self.__tie_weights()
 
     # Normalize the input
-    z = F.normalize(input, p=2, dim=1)
+    z = F.normalize(input_tensor, p=2, dim=1)
     if self.noise_prob > 0.0:
       z = self.noise_layer(z)
 
-    z = self.__en_linear_embedding_layer(input_items, z)
+    z = self.__en_linear_embedding_layer(input.items, z)
     z = activation(z, self.activation_type)
 
     for encoding_layer in self.encoding_layers:
@@ -248,9 +236,9 @@ class DynamicAutoencoder(FactorizationModel):
     for decoding_layer in self.decoding_layers:
       z = activation(decoding_layer(z), self.activation_type)
 
-    z = self.__de_linear_embedding_layer(target_items, z)
+    z = self.__de_linear_embedding_layer(input.items, z)
 
-    return z
+    return ModelOutput(output=z, target=input_tensor)
 
 
 class LinearEmbedding(nn.Module):
@@ -341,22 +329,22 @@ class MatrixFactorization(FactorizationModel):
     self.activation_type = model_params['activation_type']
     self.dropout_prob = model_params['dropout_prob']
 
-  def forward(self, input, input_users=None,
-              input_items=None, target_users=None,
-              target_items=None):
+  def forward(self, input):
+    input_sparse_tensor = input.sparse_tensor
+    input_tensor = input_sparse_tensor.to_dense()
 
-    users_embeddings = self.user_embedding_layer(input_users)
+    users_embeddings = self.user_embedding_layer(input.users)
     users_embeddings = activation(users_embeddings, self.activation_type)
 
     if self.dropout_prob > 0:
       users_embeddings = self.dropout_layer(users_embeddings)
 
-    if target_items is None:
+    if input.items is None:
       items_embeddings = self.item_embedding_layer.weight
       bias = self.bias
     else:
-      items_embeddings = self.item_embedding_layer(target_items)
-      bias = self.bias.index_select(0, target_items)
+      items_embeddings = self.item_embedding_layer(input.items)
+      bias = self.bias.index_select(0, input.items)
 
     output = F.linear(users_embeddings, items_embeddings, bias)
-    return output
+    return ModelOutput(output=output, target=input_tensor)

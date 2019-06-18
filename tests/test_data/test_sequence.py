@@ -1,5 +1,6 @@
-from recoder.data.sequence import SequenceDataset, SequenceDataLoader, SequencesCollator, _downsample_sequence
-from recoder.data.utils import dataframe_to_seq_csr_matrix
+from recoder.data.sequence import SequenceDataset, SequenceDataLoader, SequencesCollator, \
+  _sample_sequences, Sequences, _truncate_sequences
+from recoder.data.utils import dataframe_to_seq_array
 
 import pandas as pd
 import numpy as np
@@ -24,12 +25,12 @@ def input_dataframe():
 
 
 def test_SequenceDataset(input_dataframe):
-  interactions_matrix, sequences_lens, item_id_map, sequence_id_map = \
-    dataframe_to_seq_csr_matrix(input_dataframe,
-                                sequence_id_col='sequence_id',
-                                sequence_col='sequence')
+  sequences, sequences_lens, item_id_map, sequence_id_map = \
+    dataframe_to_seq_array(input_dataframe,
+                           sequence_id_col='sequence_id',
+                           sequence_col='sequence')
 
-  dataset = SequenceDataset(interactions_matrix, sequences_lens)
+  dataset = SequenceDataset(sequences, sequences_lens)
 
   assert len(dataset) == len(np.unique(input_dataframe['sequence_id']))
 
@@ -38,45 +39,37 @@ def test_SequenceDataset(input_dataframe):
   index = np.random.randint(0, len(dataset))
   sequence = dataset[index]
 
-  assert sequence.sequences_matrix.shape[0] == \
+  assert sequence.sequences.shape[0] == \
          len(np.hstack(input_dataframe[input_dataframe.sequence_id == inverse_sequence_id_map[index]].sequence.values))
 
-  assert (sequence.sequences_matrix.indices ==
+  assert (sequence.sequences ==
           np.hstack(input_dataframe[input_dataframe.sequence_id == inverse_sequence_id_map[index]]
                     .sequence.map(lambda itemids: list(map(lambda itemid: item_id_map[itemid], itemids))).values)).all()
-
-  # make sure there's only one element per row
-  assert sequence.sequences_matrix.shape[0] == len(sequence.sequences_matrix.data)
 
   index = np.random.randint(0, len(dataset), np.random.randint(2, 3000))
   sequence = dataset[index]
 
-  assert sequence.sequences_matrix.shape[0] == \
+  assert sequence.sequences.shape[0] == \
          len(np.hstack(reduce(pd.DataFrame.append, map(lambda i: input_dataframe[input_dataframe.sequence_id == inverse_sequence_id_map[i]], index)).sequence.values))
 
-  assert (sequence.sequences_matrix.indices ==
+  assert (sequence.sequences ==
           np.hstack(reduce(pd.DataFrame.append, map(lambda i: input_dataframe[input_dataframe.sequence_id == inverse_sequence_id_map[i]], index))
                     .sequence.map(lambda itemids: list(map(lambda itemid: item_id_map[itemid], itemids))).values)).all()
 
-  # make sure there's only one element per row
-  assert sequence.sequences_matrix.shape[0] == len(sequence.sequences_matrix.data)
 
+@pytest.mark.parametrize("batch_size",
+                         [5, 10])
+def test_SequenceDataLoader(input_dataframe, batch_size):
 
-@pytest.mark.parametrize("batch_size,num_sampling_sequences",
-                         [(5, 0),
-                          (5, 10)])
-def test_SequenceDataLoader(input_dataframe, batch_size, num_sampling_sequences):
-
-  interactions_matrix, sequences_lens, item_id_map, sequence_id_map = \
-    dataframe_to_seq_csr_matrix(input_dataframe,
+  sequences, sequences_lens, item_id_map, sequence_id_map = \
+    dataframe_to_seq_array(input_dataframe,
                                 sequence_id_col='sequence_id',
                                 sequence_col='sequence')
 
-  dataset = SequenceDataset(interactions_matrix, sequences_lens)
+  dataset = SequenceDataset(sequences, sequences_lens)
 
   dataloader = SequenceDataLoader(dataset, batch_size=batch_size,
-                                  negative_sampling=True,
-                                  num_sampling_sequences=num_sampling_sequences)
+                                  negative_sampling=True)
 
   for batch_idx, input in enumerate(dataloader, 1):
     input.to(torch.device('cpu'))
@@ -92,63 +85,82 @@ def test_SequenceDataLoader(input_dataframe, batch_size, num_sampling_sequences)
     assert (input_dense.sum(dim=1) <= 1).all() and (input_dense.sum(dim=1) >= 0).all()
 
 
-@pytest.mark.parametrize("batch_size",
-                         [1, 2, 5, 10, 13])
-def test_SequencesCollator(input_dataframe, batch_size):
-  sequences_matrix, sequences_lens, item_id_map, sequence_id_map = \
-    dataframe_to_seq_csr_matrix(input_dataframe,
-                                sequence_id_col='sequence_id',
-                                sequence_col='sequence')
+@pytest.mark.parametrize("max_seq_len",
+                         [None, 5])
+def test_SequencesCollator(input_dataframe, max_seq_len):
+  sequences, sequences_lens, item_id_map, sequence_id_map = \
+    dataframe_to_seq_array(input_dataframe,
+                           sequence_id_col='sequence_id',
+                           sequence_col='sequence')
 
-  dataset = SequenceDataset(sequences_matrix, sequences_lens)
+  dataset = SequenceDataset(sequences, sequences_lens)
 
-  batch_collator = SequencesCollator(batch_size=batch_size,
-                                     negative_sampling=True)
+  batch_collator = SequencesCollator(num_items=len(dataset.items), negative_sampling=True, max_seq_len=max_seq_len)
 
   big_batch = dataset[np.arange(len(dataset))]
 
-  batches = batch_collator.collate(big_batch)
+  batch = batch_collator.collate(big_batch)
 
-  assert len(batches) == np.ceil(len(dataset) / batch_size)
+  batch.to(torch.device('cpu'))
+  input_dense = batch.sparse_tensor.to_dense()
+  input_dense = input_dense.view(len(batch.sequence_ids), -1, len(batch.items))
 
-  current_batch = 0
-  for batch in batches:
-    batch.to(torch.device('cpu'))
-    input_dense = batch.sparse_tensor.to_dense()
-    input_dense = input_dense.view(len(batch.sequence_ids), -1, len(batch.items))
+  assert max_seq_len is None or input_dense.shape[1] <= max_seq_len
 
-    input_items = batch.items
+  input_items = batch.items
 
-    batch_sequence_ids = big_batch.sequence_ids[current_batch:current_batch+batch_size]
-    batch_seq_lens = big_batch.sequences_lens[current_batch:current_batch+batch_size]
-    batch_sparse_matrix = dataset[np.arange(current_batch, min(current_batch + batch_size, len(dataset)))].sequences_matrix
+  batch_sequence_ids = big_batch.sequence_ids
+  batch_seq_lens = big_batch.sequences_lens
+  truncated_batch_seq_lens = big_batch.sequences_lens if max_seq_len is None else big_batch.sequences_lens.clip(max=max_seq_len)
+  batch_sequences = big_batch.sequences
 
-    assert ((input_dense > 0).float().sum(dim=[1, 2]).tolist() == batch_seq_lens).all()
+  assert ((input_dense > 0).float().sum(dim=[1, 2]).tolist() == truncated_batch_seq_lens).all()
 
-    item_idx_map = {item_id: item_idx for item_idx, item_id in enumerate(input_items.tolist())}
+  if max_seq_len is not None:
+    return
 
-    offset = 0
-    for seq_idx in range(len(batch_sequence_ids)):
-      for item_pos in range(offset, offset + batch_seq_lens[seq_idx]):
-        assert batch_sparse_matrix.indices[item_pos] in input_items
-        assert input_dense[seq_idx, item_pos - offset, item_idx_map[batch_sparse_matrix.indices[item_pos]]] == \
-               batch_sparse_matrix.data[item_pos]
+  item_idx_map = {item_id: item_idx for item_idx, item_id in enumerate(input_items.tolist())}
 
-      offset += batch_seq_lens[seq_idx]
+  offset = 0
+  for seq_idx in range(len(batch_sequence_ids)):
+    for item_pos in range(offset, offset + batch_seq_lens[seq_idx]):
+      assert (batch_sequences[item_pos] in input_items and
+              input_dense[seq_idx, item_pos - offset, item_idx_map[batch_sequences[item_pos]]] == 1)
 
-    current_batch += batch_size
+    offset += batch_seq_lens[seq_idx]
+
+
+@pytest.mark.parametrize("max_seq_len",
+                         [5, 10])
+def test_sequences_truncation(input_dataframe, max_seq_len):
+  sequences, sequences_lens, item_id_map, sequence_id_map = \
+    dataframe_to_seq_array(input_dataframe,
+                           sequence_id_col='sequence_id',
+                           sequence_col='sequence')
+  dataset = SequenceDataset(sequences, sequences_lens)
+  big_batch = dataset[np.arange(len(dataset))]
+  truncated_sequences = _truncate_sequences(big_batch, max_seq_len)
+
+  assert (truncated_sequences.sequence_ids == big_batch.sequence_ids).all()
+  assert len(truncated_sequences.sequences_lens) == len(big_batch.sequences_lens)
+  assert np.max(truncated_sequences.sequences_lens) <= max_seq_len
+  assert np.min(truncated_sequences.sequences_lens) > 0
+  assert np.sum(truncated_sequences.sequences_lens) == len(truncated_sequences.sequences)
 
 
 def test_downsample_sequence():
-  sequences_indptr = [0, 4, 6, 15, 20, 21]
-  interactions = np.ones(21)
+  sequence_ids = np.arange(5)
+  sequences_lens = [4, 2, 9, 5, 1]
   sample_mask = np.array([1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0])
-  items_inds = np.array([49, 16, 23, 64, 64, 14, 95, 3, 56, 61, 26, 84, 58, 45, 63, 38, 85, 97, 15, 94, 74])
+  sequences_items = np.array([49, 16, 23, 64, 64, 14, 95, 3, 56, 61, 26, 84, 58, 45, 63, 38, 85, 97, 15, 94, 74])
 
-  _downsample_sequence(sequences_indptr=sequences_indptr,
-                       interactions=interactions,
-                       sample_mask=sample_mask,
-                       items_inds=items_inds)
+  sequences = Sequences(sequence_ids=sequence_ids,
+                        sequences=sequences_items,
+                        sequences_lens=sequences_lens)
 
-  assert (interactions == np.array([1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0])).all()
-  assert (items_inds == np.array([49, 64, 0, 0, 0, 0, 95, 3, 61, 26, 84, 45, 63, 0, 0, 38, 97, 15, 94, 0, 0])).all()
+  sampled_sequences = _sample_sequences(sequences=sequences,
+                                        sample_mask=sample_mask)
+
+  assert (sampled_sequences.sequences == np.array([49, 64, 95,  3, 61, 26, 84, 45, 63, 38, 97, 15, 94])).all()
+  assert (sampled_sequences.sequences_lens == np.array([2, 7, 4])).all()
+  assert (sampled_sequences.sequence_ids == np.array([0, 2, 3])).all()

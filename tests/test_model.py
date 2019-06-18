@@ -4,16 +4,16 @@ import pytest
 
 from recoder.data.factorization import RecommendationDataset
 from recoder.metrics import Recall, NDCG
-from recoder.model import Recoder
-from recoder.nn import DynamicAutoencoder, MatrixFactorization
+from recoder.model.factorization import Recoder
+from recoder.nn.factorization import DynamicAutoencoder, MatrixFactorization
 from recoder.data.utils import dataframe_to_csr_matrix
 
 import os
 
 
 @pytest.mark.parametrize("sparse,exp_recall_20,exp_recall_50,exp_ndcg_100",[
-  (False, 0.40, 0.43, 0.45),
-  (True, 0.40, 0.43, 0.45),
+  (False, 0.17, 0.43, 0.45),
+  (True, 0.16, 0.43, 0.45),
 ])
 def test_model(sparse, exp_recall_20, exp_recall_50, exp_ndcg_100):
   data_dir = 'tests/data/'
@@ -33,8 +33,7 @@ def test_model(sparse, exp_recall_20, exp_recall_50, exp_ndcg_100):
                                              item_id_map=item_id_map, user_id_map=user_id_map)
 
   train_dataset = RecommendationDataset(train_matrix)
-  val_dataset = RecommendationDataset(val_matrix, train_matrix)
-
+  val_dataset = RecommendationDataset(val_matrix)
 
   use_cuda = False
   model = DynamicAutoencoder(hidden_layers=[200], activation_type='tanh',
@@ -51,8 +50,8 @@ def test_model(sparse, exp_recall_20, exp_recall_50, exp_ndcg_100):
   recall_50 = Recall(k=50, normalize=True)
   ndcg_100 = NDCG(k=100)
 
-  results = trainer._evaluate(eval_dataset=val_dataset, num_recommendations=100,
-                              metrics=[recall_20, recall_50, ndcg_100], batch_size=500)
+  results = trainer.evaluate(eval_dataset=val_dataset, num_recommendations=100,
+                             metrics=[recall_20, recall_50, ndcg_100], batch_size=500)
 
   for metric, value in list(results.items()):
     results[metric] = np.mean(results[metric])
@@ -71,8 +70,8 @@ def test_model(sparse, exp_recall_20, exp_recall_50, exp_ndcg_100):
 
   trainer.init_from_model_file(state_file)
 
-  results = trainer._evaluate(eval_dataset=val_dataset, num_recommendations=100,
-                              metrics=[recall_20, recall_50, ndcg_100], batch_size=500)
+  results = trainer.evaluate(eval_dataset=val_dataset, num_recommendations=100,
+                             metrics=[recall_20, recall_50, ndcg_100], batch_size=500)
 
   for metric, value in list(results.items()):
     results[metric] = np.mean(results[metric])
